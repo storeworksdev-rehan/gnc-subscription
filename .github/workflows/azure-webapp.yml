@@ -1,0 +1,60 @@
+# Build the Next.js app and deploy it to Azure App Service (Linux, Node)
+# using a publish profile stored in the AZURE_WEBAPP_PUBLISH_PROFILE secret.
+#
+# Setup (one time):
+#   1. Azure Portal -> your App Service -> Overview -> "Download publish profile"
+#      (if the button is disabled: Configuration -> General settings ->
+#       "SCM Basic Auth Publishing Credentials" must be ON)
+#   2. GitHub repo -> Settings -> Secrets and variables -> Actions ->
+#      New repository secret: AZURE_WEBAPP_PUBLISH_PROFILE = file contents
+#   3. Set AZURE_WEBAPP_NAME below to your App Service name.
+
+name: Deploy to Azure App Service
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: gnc-subscription # <-- change to your App Service name
+  NODE_VERSION: "22.x"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Assemble standalone deployment package
+        run: |
+          mkdir deploy
+          cp -r .next/standalone/. deploy/
+          mkdir -p deploy/.next/static
+          cp -r .next/static/. deploy/.next/static/
+          cp -r public deploy/public
+          cd deploy
+          # App Service starts the app with `npm start`
+          npm pkg set scripts.start="node server.js"
+          zip -r ../app.zip . -x "*.map"
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: app.zip

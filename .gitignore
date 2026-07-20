@@ -36,6 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# azure deployment artifacts
+/deploy
+app.zip
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
