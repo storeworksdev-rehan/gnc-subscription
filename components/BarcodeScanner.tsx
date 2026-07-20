@@ -25,6 +25,11 @@ type ScannedItem = {
   scannedAt: number;
 };
 
+type Pending = {
+  code: string;
+  format: string;
+};
+
 type Toast = {
   kind: "success" | "warn";
   message: string;
@@ -59,8 +64,11 @@ export default function BarcodeScanner() {
   const scanTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastScanRef = useRef<{ code: string; at: number }>({ code: "", at: 0 });
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const itemsRef = useRef<ScannedItem[]>([]);
+  const pendingRef = useRef<Pending | null>(null);
 
   const [items, setItems] = useState<ScannedItem[]>([]);
+  const [pending, setPendingState] = useState<Pending | null>(null);
   const [scanning, setScanning] = useState(false);
   const [starting, setStarting] = useState(false);
   const [flash, setFlash] = useState(0);
@@ -71,43 +79,93 @@ export default function BarcodeScanner() {
   const [manualCode, setManualCode] = useState("");
   const [redirecting, setRedirecting] = useState(false);
 
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  const setPending = useCallback((next: Pending | null) => {
+    pendingRef.current = next;
+    setPendingState(next);
+  }, []);
+
   const showToast = useCallback((t: Toast) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(t);
     toastTimerRef.current = setTimeout(() => setToast(null), 2200);
   }, []);
 
-  const addCode = useCallback(
-    (rawCode: string, format: string, source: "camera" | "manual") => {
+  /** Actually saves an item to the list - runs after the user confirms. */
+  const commitItem = useCallback(
+    (rawCode: string, format: string) => {
       const code = rawCode.trim();
       if (!code) return;
 
-      const now = Date.now();
-      if (
-        source === "camera" &&
-        lastScanRef.current.code === code &&
-        now - lastScanRef.current.at < RESCAN_COOLDOWN
-      ) {
-        // sliding window: while the same barcode stays in view, keep quiet
-        lastScanRef.current.at = now;
-        return;
-      }
-      lastScanRef.current = { code, at: now };
-
+      let added = false;
       setItems((prev) => {
-        if (prev.some((i) => i.code === code)) {
-          showToast({ kind: "warn", message: `${code} already in the list` });
-          return prev;
-        }
+        if (prev.some((i) => i.code === code)) return prev;
+        added = true;
+        return [{ code, format, scannedAt: Date.now() }, ...prev];
+      });
+
+      if (added) {
         playBeep();
         if (navigator.vibrate) navigator.vibrate(60);
         setFlash((f) => f + 1);
-        showToast({ kind: "success", message: `Captured ${code}` });
-        return [{ code, format, scannedAt: now }, ...prev];
-      });
+        showToast({ kind: "success", message: `Added ${code} to your list` });
+      } else {
+        showToast({ kind: "warn", message: `${code} already in the list` });
+      }
     },
     [showToast],
   );
+
+  /** Camera detection hit - ask the user to confirm before adding it. */
+  const handleDetected = useCallback((rawCode: string, format: string) => {
+    const code = rawCode.trim();
+    if (!code || pendingRef.current) return;
+
+    const now = Date.now();
+    if (
+      lastScanRef.current.code === code &&
+      now - lastScanRef.current.at < RESCAN_COOLDOWN
+    ) {
+      // sliding window: while the same barcode stays in view, keep quiet
+      lastScanRef.current.at = now;
+      return;
+    }
+    lastScanRef.current = { code, at: now };
+
+    if (itemsRef.current.some((i) => i.code === code)) {
+      showToast({ kind: "warn", message: `${code} already in the list` });
+      return;
+    }
+
+    setPending({ code, format });
+  }, [setPending, showToast]);
+
+  const confirmPending = useCallback(() => {
+    const current = pendingRef.current;
+    if (!current) return;
+    commitItem(current.code, current.format);
+    setPending(null);
+  }, [commitItem, setPending]);
+
+  const cancelPending = useCallback(() => {
+    // restart the cooldown so the same barcode doesn't instantly re-prompt
+    lastScanRef.current.at = Date.now();
+    setPending(null);
+  }, [setPending]);
+
+  // Keyboard shortcuts while the confirmation popup is open.
+  useEffect(() => {
+    if (!pending) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter") confirmPending();
+      if (e.key === "Escape") cancelPending();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, confirmPending, cancelPending]);
 
   const stopScanning = useCallback(() => {
     if (scanTimerRef.current) {
@@ -159,13 +217,15 @@ export default function BarcodeScanner() {
 
       let busy = false;
       scanTimerRef.current = setInterval(async () => {
-        if (busy || !detectorRef.current || video.readyState < 2) return;
+        // pause detection entirely while a confirmation popup is open
+        if (busy || pendingRef.current || !detectorRef.current || video.readyState < 2) {
+          return;
+        }
         busy = true;
         try {
           const barcodes = await detectorRef.current.detect(video);
-          for (const b of barcodes) {
-            addCode(b.rawValue, b.format, "camera");
-          }
+          const first = barcodes[0];
+          if (first) handleDetected(first.rawValue, first.format);
         } catch {
           /* frame not ready - skip it */
         } finally {
@@ -189,7 +249,7 @@ export default function BarcodeScanner() {
     } finally {
       setStarting(false);
     }
-  }, [addCode, deviceId, scanning, starting, stopScanning]);
+  }, [handleDetected, deviceId, scanning, starting, stopScanning]);
 
   const switchDevice = useCallback(
     (id: string) => {
@@ -210,7 +270,7 @@ export default function BarcodeScanner() {
 
   const handleManualAdd = (e: React.FormEvent) => {
     e.preventDefault();
-    addCode(manualCode, "manual", "manual");
+    commitItem(manualCode, "manual");
     setManualCode("");
   };
 
@@ -245,17 +305,23 @@ export default function BarcodeScanner() {
             </h2>
             <span
               className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wider ${
-                scanning
-                  ? "bg-brand/15 text-brand"
-                  : "bg-surface-2 text-muted"
+                pending
+                  ? "bg-amber-400/15 text-amber-300"
+                  : scanning
+                    ? "bg-brand/15 text-brand"
+                    : "bg-surface-2 text-muted"
               }`}
             >
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
-                  scanning ? "bg-brand pulse-dot" : "bg-muted"
+                  pending
+                    ? "bg-amber-300 pulse-dot"
+                    : scanning
+                      ? "bg-brand pulse-dot"
+                      : "bg-muted"
                 }`}
               />
-              {scanning ? "Live" : "Idle"}
+              {pending ? "Confirm" : scanning ? "Live" : "Idle"}
             </span>
           </div>
 
@@ -283,7 +349,7 @@ export default function BarcodeScanner() {
               <span className="absolute right-0 top-0 h-8 w-8 border-r-[3px] border-t-[3px] border-brand" />
               <span className="absolute bottom-0 left-0 h-8 w-8 border-b-[3px] border-l-[3px] border-brand" />
               <span className="absolute bottom-0 right-0 h-8 w-8 border-b-[3px] border-r-[3px] border-brand" />
-              {scanning && (
+              {scanning && !pending && (
                 <span className="laser absolute left-[4%] right-[4%] h-[2px] rounded-full bg-brand" />
               )}
             </div>
@@ -305,8 +371,8 @@ export default function BarcodeScanner() {
                   <p className="max-w-sm text-sm text-red-300">{cameraError}</p>
                 ) : (
                   <p className="max-w-sm text-sm text-muted">
-                    Point your camera at a product barcode. Every code you scan
-                    is added to the list - scan as many as you need.
+                    Point your camera at a product barcode. You&apos;ll be asked
+                    to confirm each item before it&apos;s added.
                   </p>
                 )}
                 <button
@@ -319,10 +385,57 @@ export default function BarcodeScanner() {
               </div>
             )}
 
+            {/* confirmation popup */}
+            {pending && (
+              <div className="slide-in absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-black/85 px-6 text-center backdrop-blur-sm">
+                <span className="rounded-full border border-brand/40 bg-brand/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-brand">
+                  Barcode Detected
+                </span>
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-brand/15">
+                  <svg
+                    className="h-8 w-8 text-brand"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                  >
+                    <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                    <path d="M7 8v8M10 8v8M13 8v5M16 8v8" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="break-all font-mono text-xl font-semibold text-white">
+                    {pending.code}
+                  </p>
+                  <p className="mt-1 text-[11px] uppercase tracking-wider text-muted">
+                    {formatLabel(pending.format)}
+                  </p>
+                </div>
+                <p className="max-w-xs text-sm text-muted">
+                  Add this item to your scan list?
+                </p>
+                <div className="flex w-full max-w-xs gap-3">
+                  <button
+                    onClick={cancelPending}
+                    className="flex-1 rounded-full border border-line px-4 py-3 text-sm font-semibold text-muted transition hover:border-brand hover:text-brand"
+                  >
+                    Rescan
+                  </button>
+                  <button
+                    onClick={confirmPending}
+                    autoFocus
+                    className="flex-1 rounded-full bg-brand px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-dark"
+                  >
+                    Add Item
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* toast */}
             {toast && (
               <div
-                className={`slide-in absolute left-1/2 top-4 -translate-x-1/2 rounded-full px-4 py-2 text-xs font-semibold shadow-lg ${
+                className={`slide-in absolute left-1/2 top-4 -translate-x-1/2 z-30 rounded-full px-4 py-2 text-xs font-semibold shadow-lg ${
                   toast.kind === "success"
                     ? "bg-brand text-white"
                     : "bg-surface-2 text-amber-300 border border-line"
@@ -407,7 +520,7 @@ export default function BarcodeScanner() {
               <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 text-center">
                 <p className="text-sm text-muted">No barcodes yet</p>
                 <p className="text-xs text-muted/60">
-                  Scanned SKUs will appear here
+                  Confirmed SKUs will appear here
                 </p>
               </div>
             ) : (
