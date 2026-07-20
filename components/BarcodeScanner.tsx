@@ -57,6 +57,11 @@ function formatLabel(format: string) {
   return format.replace(/_/g, "-").toUpperCase();
 }
 
+/** Keeps long barcode payloads from blowing out fixed-height UI. */
+function truncateCode(code: string, max = 22) {
+  return code.length > max ? `${code.slice(0, max)}…` : code;
+}
+
 export default function BarcodeScanner() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -403,9 +408,12 @@ export default function BarcodeScanner() {
                     <path d="M7 8v8M10 8v8M13 8v5M16 8v8" strokeLinecap="round" />
                   </svg>
                 </div>
-                <div>
-                  <p className="break-all font-mono text-xl font-semibold text-white">
-                    {pending.code}
+                <div className="max-w-full px-4">
+                  <p
+                    className="truncate font-mono text-xl font-semibold text-white"
+                    title={pending.code}
+                  >
+                    {truncateCode(pending.code)}
                   </p>
                   <p className="mt-1 text-[11px] uppercase tracking-wider text-muted">
                     {formatLabel(pending.format)}
@@ -534,7 +542,10 @@ export default function BarcodeScanner() {
                       {String(items.length - idx).padStart(2, "0")}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-mono text-sm font-medium text-foreground">
+                      <p
+                        className="truncate font-mono text-sm font-medium text-foreground"
+                        title={item.code}
+                      >
                         {item.code}
                       </p>
                       <p className="text-[11px] uppercase tracking-wider text-muted">
