@@ -8,8 +8,11 @@ import {
   pickRandomProduct,
   priceForPurchaseType,
   formatPrice,
+  SUBSCRIPTION_FREQUENCIES,
+  DEFAULT_SUBSCRIPTION_FREQUENCY,
   type Product,
   type PurchaseType,
+  type SubscriptionFrequency,
 } from "@/lib/products";
 
 // Serve the ZXing wasm binary from our own /public instead of a CDN.
@@ -32,6 +35,8 @@ type ScannedItem = {
   name: string;
   price: number;
   purchaseType: PurchaseType;
+  /** Re-ship interval in days - only meaningful when purchaseType is "subscription". */
+  frequencyDays?: SubscriptionFrequency;
   format: string;
   scannedAt: number;
 };
@@ -41,6 +46,7 @@ type Pending = {
   format: string;
   product: Product;
   purchaseType: PurchaseType;
+  frequencyDays: SubscriptionFrequency;
 };
 
 type Toast = {
@@ -116,7 +122,13 @@ export default function BarcodeScanner() {
     (rawCode: string, format: string) => {
       if (pendingRef.current || checkoutOpenRef.current) return;
       const product = pickRandomProduct();
-      setPending({ rawCode, format, product, purchaseType: "one-time" });
+      setPending({
+        rawCode,
+        format,
+        product,
+        purchaseType: "one-time",
+        frequencyDays: DEFAULT_SUBSCRIPTION_FREQUENCY,
+      });
     },
     [setPending],
   );
@@ -150,16 +162,26 @@ export default function BarcodeScanner() {
     [setPending],
   );
 
+  const setFrequencyDays = useCallback(
+    (days: SubscriptionFrequency) => {
+      if (!pendingRef.current) return;
+      setPending({ ...pendingRef.current, frequencyDays: days });
+    },
+    [setPending],
+  );
+
   const confirmPending = useCallback(() => {
     const current = pendingRef.current;
     if (!current) return;
     const price = priceForPurchaseType(current.product, current.purchaseType);
+    const isSubscription = current.purchaseType === "subscription";
     const newItem: ScannedItem = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       code: current.product.code,
       name: current.product.name,
       price,
       purchaseType: current.purchaseType,
+      frequencyDays: isSubscription ? current.frequencyDays : undefined,
       format: current.format,
       scannedAt: Date.now(),
     };
@@ -171,7 +193,7 @@ export default function BarcodeScanner() {
     showToast({
       kind: "success",
       message: `Added ${current.product.name} - ${
-        current.purchaseType === "subscription" ? "Subscription" : "One-Time"
+        isSubscription ? `Every ${current.frequencyDays} Days` : "One-Time"
       }`,
     });
     setPending(null);
@@ -348,6 +370,7 @@ export default function BarcodeScanner() {
         name: i.name,
         price: i.price,
         type: i.purchaseType,
+        frequencyDays: i.frequencyDays,
       })),
     });
     QRCode.toDataURL(payload, {
@@ -527,6 +550,34 @@ export default function BarcodeScanner() {
                   </p>
                 )}
 
+                {pending.product.subscriptionAvailable &&
+                  pending.purchaseType === "subscription" && (
+                    <div className="mt-3 w-full max-w-xs text-left">
+                      <label
+                        htmlFor="frequency-select"
+                        className="text-[10px] uppercase tracking-wider text-muted"
+                      >
+                        Deliver Every
+                      </label>
+                      <select
+                        id="frequency-select"
+                        value={pending.frequencyDays}
+                        onChange={(e) =>
+                          setFrequencyDays(
+                            Number(e.target.value) as SubscriptionFrequency,
+                          )
+                        }
+                        className="mt-1 w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm text-foreground outline-none focus:border-brand"
+                      >
+                        {SUBSCRIPTION_FREQUENCIES.map((days) => (
+                          <option key={days} value={days}>
+                            {days} Days
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                 <div className="mt-5 flex w-full max-w-xs gap-3">
                   <button
                     onClick={cancelPending}
@@ -662,7 +713,7 @@ export default function BarcodeScanner() {
                           }`}
                         >
                           {item.purchaseType === "subscription"
-                            ? "Subscribe"
+                            ? `Every ${item.frequencyDays} Days`
                             : "One-Time"}
                         </span>
                       </div>
@@ -734,7 +785,7 @@ export default function BarcodeScanner() {
                     </p>
                     <p className="text-[10px] uppercase tracking-wider text-muted">
                       {item.purchaseType === "subscription"
-                        ? "Subscribe & Save"
+                        ? `Subscribe - Every ${item.frequencyDays} Days`
                         : "One-Time"}{" "}
                       &middot;{" "}
                       <span className="font-mono normal-case">{item.code}</span>

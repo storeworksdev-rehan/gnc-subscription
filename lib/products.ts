@@ -1,5 +1,10 @@
 export type PurchaseType = "one-time" | "subscription";
 
+/** How often a subscription re-ships, in days - mirrors GNC's "Subscribe & Save" options. */
+export const SUBSCRIPTION_FREQUENCIES = [30, 45, 60, 90] as const;
+export type SubscriptionFrequency = (typeof SUBSCRIPTION_FREQUENCIES)[number];
+export const DEFAULT_SUBSCRIPTION_FREQUENCY: SubscriptionFrequency = 30;
+
 export type Product = {
   code: string;
   name: string;

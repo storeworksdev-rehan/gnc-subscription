@@ -5,9 +5,11 @@ import Image from "next/image";
 
 export const EMAIL_STORAGE_KEY = "gnc_scanner_email";
 
-// Practical email check: one @, something on both sides, a dot in the domain.
-// Not RFC 5322 - just enough to catch real typos without being pedantic.
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// Same pattern the WHATWG HTML spec uses for <input type="email"> validation.
+// Rejects consecutive/leading/trailing dots and bare domains (no TLD) that
+// the old loose pattern let through.
+const EMAIL_PATTERN =
+  /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
 export function isValidEmail(value: string) {
   return EMAIL_PATTERN.test(value.trim());
@@ -35,13 +37,14 @@ export default function EmailGate({
   }, []);
 
   const trimmed = email.trim();
-  const showError = touched && trimmed.length > 0 && !isValidEmail(trimmed);
+  const valid = isValidEmail(trimmed);
+  const showError = touched && trimmed.length > 0 && !valid;
   const isEmpty = trimmed.length === 0;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setTouched(true);
-    if (!isValidEmail(trimmed)) return;
+    if (!valid) return;
     window.localStorage.setItem(EMAIL_STORAGE_KEY, trimmed);
     setStoredEmail(trimmed);
   };
@@ -107,7 +110,7 @@ export default function EmailGate({
 
             <button
               type="submit"
-              disabled={isEmpty}
+              disabled={isEmpty || !valid}
               className="!mt-6 w-full rounded-full bg-brand py-3.5 font-display text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-brand-dark disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted"
             >
               Continue to Scanner
