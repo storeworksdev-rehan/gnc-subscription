@@ -1,8 +1,10 @@
 import Image from "next/image";
 import BarcodeScanner from "@/components/BarcodeScanner";
+import EmailGate from "@/components/EmailGate";
 
 export default function Home() {
   return (
+    <EmailGate>
     <div className="flex min-h-screen flex-col bg-background">
       {/* ===== Header ===== */}
       <header className="border-b-2 border-brand bg-black">
@@ -58,5 +60,6 @@ export default function Home() {
         </div>
       </footer>
     </div>
+    </EmailGate>
   );
 }

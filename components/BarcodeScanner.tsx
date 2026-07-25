@@ -2,6 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BarcodeDetector, prepareZXingModule } from "barcode-detector/ponyfill";
+import QRCode from "qrcode";
+import { getStoredEmail } from "@/components/EmailGate";
+import {
+  pickRandomProduct,
+  priceForPurchaseType,
+  formatPrice,
+  type Product,
+  type PurchaseType,
+} from "@/lib/products";
 
 // Serve the ZXing wasm binary from our own /public instead of a CDN.
 prepareZXingModule({
@@ -20,14 +29,20 @@ const SCAN_INTERVAL = 120;
 const RESCAN_COOLDOWN = 2500;
 
 type ScannedItem = {
+  id: string;
   code: string;
+  name: string;
+  price: number;
+  purchaseType: PurchaseType;
   format: string;
   scannedAt: number;
 };
 
 type Pending = {
-  code: string;
+  rawCode: string;
   format: string;
+  product: Product;
+  purchaseType: PurchaseType;
 };
 
 type Toast = {
@@ -53,15 +68,6 @@ function playBeep() {
   }
 }
 
-function formatLabel(format: string) {
-  return format.replace(/_/g, "-").toUpperCase();
-}
-
-/** Keeps long barcode payloads from blowing out fixed-height UI. */
-function truncateCode(code: string, max = 22) {
-  return code.length > max ? `${code.slice(0, max)}…` : code;
-}
-
 export default function BarcodeScanner() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -69,11 +75,12 @@ export default function BarcodeScanner() {
   const scanTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastScanRef = useRef<{ code: string; at: number }>({ code: "", at: 0 });
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const itemsRef = useRef<ScannedItem[]>([]);
   const pendingRef = useRef<Pending | null>(null);
+  const emailRef = useRef("");
 
   const [items, setItems] = useState<ScannedItem[]>([]);
   const [pending, setPendingState] = useState<Pending | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [starting, setStarting] = useState(false);
   const [flash, setFlash] = useState(0);
@@ -85,8 +92,8 @@ export default function BarcodeScanner() {
   const [redirecting, setRedirecting] = useState(false);
 
   useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
+    emailRef.current = getStoredEmail() ?? "";
+  }, []);
 
   const setPending = useCallback((next: Pending | null) => {
     pendingRef.current = next;
@@ -99,61 +106,71 @@ export default function BarcodeScanner() {
     toastTimerRef.current = setTimeout(() => setToast(null), 2200);
   }, []);
 
-  /** Actually saves an item to the list - runs after the user confirms. */
-  const commitItem = useCallback(
+  /** Opens the product confirmation popup for a freshly read code. */
+  const openConfirmation = useCallback(
     (rawCode: string, format: string) => {
-      const code = rawCode.trim();
-      if (!code) return;
-
-      let added = false;
-      setItems((prev) => {
-        if (prev.some((i) => i.code === code)) return prev;
-        added = true;
-        return [{ code, format, scannedAt: Date.now() }, ...prev];
-      });
-
-      if (added) {
-        playBeep();
-        if (navigator.vibrate) navigator.vibrate(60);
-        setFlash((f) => f + 1);
-        showToast({ kind: "success", message: `Added ${code} to your list` });
-      } else {
-        showToast({ kind: "warn", message: `${code} already in the list` });
-      }
+      if (pendingRef.current) return;
+      const product = pickRandomProduct();
+      setPending({ rawCode, format, product, purchaseType: "one-time" });
     },
-    [showToast],
+    [setPending],
   );
 
-  /** Camera detection hit - ask the user to confirm before adding it. */
-  const handleDetected = useCallback((rawCode: string, format: string) => {
-    const code = rawCode.trim();
-    if (!code || pendingRef.current) return;
+  /** Camera detection hit - runs the cooldown check, then opens the popup. */
+  const handleDetected = useCallback(
+    (rawCode: string, format: string) => {
+      const code = rawCode.trim();
+      if (!code || pendingRef.current) return;
 
-    const now = Date.now();
-    if (
-      lastScanRef.current.code === code &&
-      now - lastScanRef.current.at < RESCAN_COOLDOWN
-    ) {
-      // sliding window: while the same barcode stays in view, keep quiet
-      lastScanRef.current.at = now;
-      return;
-    }
-    lastScanRef.current = { code, at: now };
+      const now = Date.now();
+      if (
+        lastScanRef.current.code === code &&
+        now - lastScanRef.current.at < RESCAN_COOLDOWN
+      ) {
+        // sliding window: while the same barcode stays in view, keep quiet
+        lastScanRef.current.at = now;
+        return;
+      }
+      lastScanRef.current = { code, at: now };
+      openConfirmation(code, format);
+    },
+    [openConfirmation],
+  );
 
-    if (itemsRef.current.some((i) => i.code === code)) {
-      showToast({ kind: "warn", message: `${code} already in the list` });
-      return;
-    }
-
-    setPending({ code, format });
-  }, [setPending, showToast]);
+  const setPurchaseType = useCallback(
+    (type: PurchaseType) => {
+      if (!pendingRef.current) return;
+      setPending({ ...pendingRef.current, purchaseType: type });
+    },
+    [setPending],
+  );
 
   const confirmPending = useCallback(() => {
     const current = pendingRef.current;
     if (!current) return;
-    commitItem(current.code, current.format);
+    const price = priceForPurchaseType(current.product, current.purchaseType);
+    const newItem: ScannedItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      code: current.product.code,
+      name: current.product.name,
+      price,
+      purchaseType: current.purchaseType,
+      format: current.format,
+      scannedAt: Date.now(),
+    };
+
+    setItems((prev) => [newItem, ...prev]);
+    playBeep();
+    if (navigator.vibrate) navigator.vibrate(60);
+    setFlash((f) => f + 1);
+    showToast({
+      kind: "success",
+      message: `Added ${current.product.name} - ${
+        current.purchaseType === "subscription" ? "Subscription" : "One-Time"
+      }`,
+    });
     setPending(null);
-  }, [commitItem, setPending]);
+  }, [setPending, showToast]);
 
   const cancelPending = useCallback(() => {
     // restart the cooldown so the same barcode doesn't instantly re-prompt
@@ -171,6 +188,43 @@ export default function BarcodeScanner() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [pending, confirmPending, cancelPending]);
+
+  // Build the "scan to register on your phone" link for the current popup.
+  const registerUrl = useMemo(() => {
+    if (!pending) return "";
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const price = priceForPurchaseType(pending.product, pending.purchaseType);
+    const params = new URLSearchParams({
+      code: pending.product.code,
+      name: pending.product.name,
+      price: price.toFixed(2),
+      type: pending.purchaseType,
+    });
+    if (emailRef.current) params.set("email", emailRef.current);
+    return `${origin}/register?${params.toString()}`;
+  }, [pending]);
+
+  useEffect(() => {
+    if (!registerUrl) {
+      setQrDataUrl(null);
+      return;
+    }
+    let cancelled = false;
+    QRCode.toDataURL(registerUrl, {
+      margin: 1,
+      width: 176,
+      color: { dark: "#000000", light: "#ffffff" },
+    })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setQrDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [registerUrl]);
 
   const stopScanning = useCallback(() => {
     if (scanTimerRef.current) {
@@ -270,14 +324,21 @@ export default function BarcodeScanner() {
 
   useEffect(() => stopScanning, [stopScanning]);
 
-  const removeItem = (code: string) =>
-    setItems((prev) => prev.filter((i) => i.code !== code));
+  const removeItem = (id: string) =>
+    setItems((prev) => prev.filter((i) => i.id !== id));
 
   const handleManualAdd = (e: React.FormEvent) => {
     e.preventDefault();
-    commitItem(manualCode, "manual");
+    const code = manualCode.trim();
+    if (!code) return;
+    openConfirmation(code, "manual");
     setManualCode("");
   };
+
+  const subtotal = useMemo(
+    () => items.reduce((sum, i) => sum + i.price, 0),
+    [items],
+  );
 
   const redirectUrl = useMemo(() => {
     if (items.length === 0) return GNC_PRODUCT_URL;
@@ -390,39 +451,90 @@ export default function BarcodeScanner() {
               </div>
             )}
 
-            {/* confirmation popup */}
+            {/* product confirmation popup */}
             {pending && (
-              <div className="slide-in absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-black/85 px-6 text-center backdrop-blur-sm">
+              <div className="slide-in thin-scroll absolute inset-0 z-20 flex flex-col items-center overflow-y-auto bg-black/90 px-5 py-5 text-center backdrop-blur-sm">
                 <span className="rounded-full border border-brand/40 bg-brand/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-brand">
-                  Barcode Detected
+                  Item Found
                 </span>
-                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-brand/15">
-                  <svg
-                    className="h-8 w-8 text-brand"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                  >
-                    <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
-                    <path d="M7 8v8M10 8v8M13 8v5M16 8v8" strokeLinecap="round" />
-                  </svg>
-                </div>
-                <div className="max-w-full px-4">
-                  <p
-                    className="truncate font-mono text-xl font-semibold text-white"
-                    title={pending.code}
-                  >
-                    {truncateCode(pending.code)}
-                  </p>
-                  <p className="mt-1 text-[11px] uppercase tracking-wider text-muted">
-                    {formatLabel(pending.format)}
-                  </p>
-                </div>
-                <p className="max-w-xs text-sm text-muted">
-                  Add this item to your scan list?
+
+                <h3 className="mt-3 max-w-xs font-display text-base font-semibold uppercase leading-snug tracking-wide text-white">
+                  {pending.product.name}
+                </h3>
+                <p className="mt-1 max-w-xs text-xs text-muted">
+                  {pending.product.description}
                 </p>
-                <div className="flex w-full max-w-xs gap-3">
+
+                <div className="mt-3 flex items-center gap-4">
+                  <div className="text-left">
+                    <p className="text-[10px] uppercase tracking-wider text-muted">
+                      Product Code
+                    </p>
+                    <p className="font-mono text-sm font-medium text-white">
+                      {pending.product.code}
+                    </p>
+                  </div>
+                  <div className="h-8 w-px bg-line" />
+                  <div className="text-left">
+                    <p className="text-[10px] uppercase tracking-wider text-muted">
+                      Price
+                    </p>
+                    <p className="font-display text-lg font-bold text-brand">
+                      {formatPrice(
+                        priceForPurchaseType(pending.product, pending.purchaseType),
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                {pending.product.subscriptionAvailable ? (
+                  <div className="mt-4 grid w-full max-w-xs grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPurchaseType("one-time")}
+                      className={`rounded-lg border px-3 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${
+                        pending.purchaseType === "one-time"
+                          ? "border-brand bg-brand text-white"
+                          : "border-line text-muted hover:border-brand hover:text-brand"
+                      }`}
+                    >
+                      One-Time
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPurchaseType("subscription")}
+                      className={`rounded-lg border px-3 py-2 text-[11px] font-semibold uppercase tracking-wide transition ${
+                        pending.purchaseType === "subscription"
+                          ? "border-brand bg-brand text-white"
+                          : "border-line text-muted hover:border-brand hover:text-brand"
+                      }`}
+                    >
+                      Subscribe &amp; Save
+                    </button>
+                  </div>
+                ) : (
+                  <p className="mt-4 text-[11px] uppercase tracking-wider text-muted">
+                    One-Time Purchase Only
+                  </p>
+                )}
+
+                <div className="mt-4 flex flex-col items-center gap-1">
+                  {qrDataUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- dynamic data: URL, not a static asset
+                    <img
+                      src={qrDataUrl}
+                      alt="QR code to register for this item"
+                      className="h-23 w-23 rounded-md bg-white p-1.5"
+                    />
+                  ) : (
+                    <div className="h-23 w-23 animate-pulse rounded-md bg-surface-2" />
+                  )}
+                  <p className="text-[10px] text-muted/70">
+                    Scan to register on your phone
+                  </p>
+                </div>
+
+                <div className="mt-4 flex w-full max-w-xs gap-3">
                   <button
                     onClick={cancelPending}
                     className="flex-1 rounded-full border border-line px-4 py-3 text-sm font-semibold text-muted transition hover:border-brand hover:text-brand"
@@ -437,6 +549,13 @@ export default function BarcodeScanner() {
                     Add Item
                   </button>
                 </div>
+
+                <a
+                  href={registerUrl}
+                  className="mt-3 text-xs font-semibold text-brand hover:underline"
+                >
+                  Or go to Register instead &rarr;
+                </a>
               </div>
             )}
 
@@ -528,34 +647,48 @@ export default function BarcodeScanner() {
               <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 text-center">
                 <p className="text-sm text-muted">No barcodes yet</p>
                 <p className="text-xs text-muted/60">
-                  Confirmed SKUs will appear here
+                  Confirmed items will appear here
                 </p>
               </div>
             ) : (
               <ul className="space-y-2">
                 {items.map((item, idx) => (
                   <li
-                    key={item.code}
+                    key={item.id}
                     className="slide-in flex items-center gap-3 rounded-xl border border-line bg-surface-2 px-4 py-3"
                   >
                     <span className="font-display text-lg font-semibold text-brand">
                       {String(items.length - idx).padStart(2, "0")}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p
-                        className="truncate font-mono text-sm font-medium text-foreground"
-                        title={item.code}
-                      >
-                        {item.code}
-                      </p>
+                      <div className="flex items-center gap-2">
+                        <p
+                          className="truncate text-sm font-medium text-foreground"
+                          title={item.name}
+                        >
+                          {item.name}
+                        </p>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                            item.purchaseType === "subscription"
+                              ? "bg-brand/15 text-brand"
+                              : "border border-line text-muted"
+                          }`}
+                        >
+                          {item.purchaseType === "subscription"
+                            ? "Subscribe"
+                            : "One-Time"}
+                        </span>
+                      </div>
                       <p className="text-[11px] uppercase tracking-wider text-muted">
-                        {formatLabel(item.format)}{" "}
-                        {new Date(item.scannedAt).toLocaleTimeString()}
+                        <span className="font-mono normal-case">{item.code}</span>
+                        {" · "}
+                        {formatPrice(item.price)}
                       </p>
                     </div>
                     <button
-                      onClick={() => removeItem(item.code)}
-                      aria-label={`Remove ${item.code}`}
+                      onClick={() => removeItem(item.id)}
+                      aria-label={`Remove ${item.name}`}
                       className="flex h-7 w-7 items-center justify-center rounded-full text-muted transition hover:bg-brand/15 hover:text-brand"
                     >
                       &times;
@@ -568,6 +701,16 @@ export default function BarcodeScanner() {
 
           {/* CTA */}
           <div className="border-t border-line px-5 py-4">
+            {items.length > 0 && (
+              <div className="mb-3 flex items-center justify-between text-xs">
+                <span className="uppercase tracking-wider text-muted">
+                  Subtotal
+                </span>
+                <span className="font-display text-sm font-semibold text-foreground">
+                  {formatPrice(subtotal)}
+                </span>
+              </div>
+            )}
             <button
               onClick={handleContinue}
               disabled={items.length === 0 || redirecting}
