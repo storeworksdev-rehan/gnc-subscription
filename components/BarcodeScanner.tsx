@@ -20,8 +20,6 @@ prepareZXingModule({
   },
 });
 
-const GNC_PRODUCT_URL = "https://www.gnc.com/testosterone-booster/619400.html";
-
 /** How often we grab a frame and look for barcodes (ms). */
 const SCAN_INTERVAL = 120;
 
@@ -76,11 +74,11 @@ export default function BarcodeScanner() {
   const lastScanRef = useRef<{ code: string; at: number }>({ code: "", at: 0 });
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<Pending | null>(null);
+  const checkoutOpenRef = useRef(false);
   const emailRef = useRef("");
 
   const [items, setItems] = useState<ScannedItem[]>([]);
   const [pending, setPendingState] = useState<Pending | null>(null);
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [starting, setStarting] = useState(false);
   const [flash, setFlash] = useState(0);
@@ -89,7 +87,9 @@ export default function BarcodeScanner() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>("");
   const [manualCode, setManualCode] = useState("");
-  const [redirecting, setRedirecting] = useState(false);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [orderRef, setOrderRef] = useState("");
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
   useEffect(() => {
     emailRef.current = getStoredEmail() ?? "";
@@ -109,7 +109,7 @@ export default function BarcodeScanner() {
   /** Opens the product confirmation popup for a freshly read code. */
   const openConfirmation = useCallback(
     (rawCode: string, format: string) => {
-      if (pendingRef.current) return;
+      if (pendingRef.current || checkoutOpenRef.current) return;
       const product = pickRandomProduct();
       setPending({ rawCode, format, product, purchaseType: "one-time" });
     },
@@ -120,7 +120,7 @@ export default function BarcodeScanner() {
   const handleDetected = useCallback(
     (rawCode: string, format: string) => {
       const code = rawCode.trim();
-      if (!code || pendingRef.current) return;
+      if (!code || pendingRef.current || checkoutOpenRef.current) return;
 
       const now = Date.now();
       if (
@@ -189,43 +189,6 @@ export default function BarcodeScanner() {
     return () => window.removeEventListener("keydown", onKey);
   }, [pending, confirmPending, cancelPending]);
 
-  // Build the "scan to register on your phone" link for the current popup.
-  const registerUrl = useMemo(() => {
-    if (!pending) return "";
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const price = priceForPurchaseType(pending.product, pending.purchaseType);
-    const params = new URLSearchParams({
-      code: pending.product.code,
-      name: pending.product.name,
-      price: price.toFixed(2),
-      type: pending.purchaseType,
-    });
-    if (emailRef.current) params.set("email", emailRef.current);
-    return `${origin}/register?${params.toString()}`;
-  }, [pending]);
-
-  useEffect(() => {
-    if (!registerUrl) {
-      setQrDataUrl(null);
-      return;
-    }
-    let cancelled = false;
-    QRCode.toDataURL(registerUrl, {
-      margin: 1,
-      width: 176,
-      color: { dark: "#000000", light: "#ffffff" },
-    })
-      .then((url) => {
-        if (!cancelled) setQrDataUrl(url);
-      })
-      .catch(() => {
-        if (!cancelled) setQrDataUrl(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [registerUrl]);
-
   const stopScanning = useCallback(() => {
     if (scanTimerRef.current) {
       clearInterval(scanTimerRef.current);
@@ -276,8 +239,14 @@ export default function BarcodeScanner() {
 
       let busy = false;
       scanTimerRef.current = setInterval(async () => {
-        // pause detection entirely while a confirmation popup is open
-        if (busy || pendingRef.current || !detectorRef.current || video.readyState < 2) {
+        // pause detection while a popup or the checkout modal is open
+        if (
+          busy ||
+          pendingRef.current ||
+          checkoutOpenRef.current ||
+          !detectorRef.current ||
+          video.readyState < 2
+        ) {
           return;
         }
         busy = true;
@@ -340,25 +309,57 @@ export default function BarcodeScanner() {
     [items],
   );
 
-  const redirectUrl = useMemo(() => {
-    if (items.length === 0) return GNC_PRODUCT_URL;
-    const url = new URL(GNC_PRODUCT_URL);
-    url.searchParams.set(
-      "skus",
-      items
-        .map((i) => i.code)
-        .reverse()
-        .join(","),
-    );
-    return url.toString();
-  }, [items]);
-
-  const handleContinue = () => {
+  const openCheckout = useCallback(() => {
     if (items.length === 0) return;
-    setRedirecting(true);
-    stopScanning();
-    window.location.href = redirectUrl;
-  };
+    checkoutOpenRef.current = true;
+    setOrderRef(`GNC-${Date.now().toString(36).toUpperCase()}`);
+    setCheckoutOpen(true);
+  }, [items.length]);
+
+  const closeCheckout = useCallback(() => {
+    checkoutOpenRef.current = false;
+    setCheckoutOpen(false);
+  }, []);
+
+  const resetOrder = useCallback(() => {
+    setItems([]);
+    checkoutOpenRef.current = false;
+    setCheckoutOpen(false);
+  }, []);
+
+  // Generate the checkout QR code the customer shows to the cashier.
+  useEffect(() => {
+    if (!checkoutOpen || !orderRef || items.length === 0) {
+      setQrDataUrl(null);
+      return;
+    }
+    let cancelled = false;
+    const payload = JSON.stringify({
+      ref: orderRef,
+      email: emailRef.current,
+      subtotal,
+      items: items.map((i) => ({
+        code: i.code,
+        name: i.name,
+        price: i.price,
+        type: i.purchaseType,
+      })),
+    });
+    QRCode.toDataURL(payload, {
+      margin: 1,
+      width: 220,
+      color: { dark: "#000000", light: "#ffffff" },
+    })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setQrDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [checkoutOpen, orderRef, items, subtotal]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-5">
@@ -518,23 +519,7 @@ export default function BarcodeScanner() {
                   </p>
                 )}
 
-                <div className="mt-4 flex flex-col items-center gap-1">
-                  {qrDataUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element -- dynamic data: URL, not a static asset
-                    <img
-                      src={qrDataUrl}
-                      alt="QR code to register for this item"
-                      className="h-23 w-23 rounded-md bg-white p-1.5"
-                    />
-                  ) : (
-                    <div className="h-23 w-23 animate-pulse rounded-md bg-surface-2" />
-                  )}
-                  <p className="text-[10px] text-muted/70">
-                    Scan to register on your phone
-                  </p>
-                </div>
-
-                <div className="mt-4 flex w-full max-w-xs gap-3">
+                <div className="mt-5 flex w-full max-w-xs gap-3">
                   <button
                     onClick={cancelPending}
                     className="flex-1 rounded-full border border-line px-4 py-3 text-sm font-semibold text-muted transition hover:border-brand hover:text-brand"
@@ -549,13 +534,6 @@ export default function BarcodeScanner() {
                     Add Item
                   </button>
                 </div>
-
-                <a
-                  href={registerUrl}
-                  className="mt-3 text-xs font-semibold text-brand hover:underline"
-                >
-                  Or go to Register instead &rarr;
-                </a>
               </div>
             )}
 
@@ -712,24 +690,93 @@ export default function BarcodeScanner() {
               </div>
             )}
             <button
-              onClick={handleContinue}
-              disabled={items.length === 0 || redirecting}
+              onClick={openCheckout}
+              disabled={items.length === 0}
               className="w-full rounded-full bg-brand py-3.5 font-display text-sm font-semibold uppercase tracking-[0.18em] text-white transition hover:bg-brand-dark disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-muted"
             >
-              {redirecting
-                ? "Redirecting..."
-                : items.length === 0
-                  ? "Scan a product to continue"
-                  : `Continue to GNC (${items.length} SKU${items.length > 1 ? "s" : ""})`}
+              {items.length === 0
+                ? "Scan a product to continue"
+                : `Continue to Register (${items.length} item${items.length > 1 ? "s" : ""})`}
             </button>
-            {items.length > 0 && (
-              <p className="mt-3 break-all text-center font-mono text-[10px] leading-relaxed text-muted/70">
-                {redirectUrl}
-              </p>
-            )}
           </div>
         </div>
       </section>
+
+      {/* ============ Checkout / register popup ============ */}
+      {checkoutOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4 py-8 backdrop-blur-sm">
+          <div className="thin-scroll max-h-full w-full max-w-md overflow-y-auto rounded-2xl border border-line bg-surface p-6 text-center sm:p-8">
+            <span className="inline-block rounded-full border border-brand/40 bg-brand/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-brand">
+              Ready for Checkout
+            </span>
+
+            <h2 className="mt-4 font-display text-xl font-semibold uppercase tracking-wide text-foreground">
+              Your Order
+            </h2>
+
+            <ul className="mt-4 space-y-2 text-left">
+              {items.map((item) => (
+                <li
+                  key={item.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-foreground">{item.name}</p>
+                    <p className="text-[10px] uppercase tracking-wider text-muted">
+                      {item.purchaseType === "subscription"
+                        ? "Subscribe & Save"
+                        : "One-Time"}{" "}
+                      &middot;{" "}
+                      <span className="font-mono normal-case">{item.code}</span>
+                    </p>
+                  </div>
+                  <span className="shrink-0 font-display font-semibold text-brand">
+                    {formatPrice(item.price)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+
+            <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-sm">
+              <span className="text-muted">Subtotal</span>
+              <span className="font-display text-base font-semibold text-foreground">
+                {formatPrice(subtotal)}
+              </span>
+            </div>
+
+            <div className="mt-6 flex flex-col items-center gap-2">
+              {qrDataUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element -- dynamic data: URL, not a static asset
+                <img
+                  src={qrDataUrl}
+                  alt="Checkout QR code"
+                  className="h-45 w-45 rounded-lg bg-white p-2"
+                />
+              ) : (
+                <div className="h-45 w-45 animate-pulse rounded-lg bg-surface-2" />
+              )}
+              <p className="font-mono text-xs text-muted">{orderRef}</p>
+              <p className="max-w-xs text-sm text-muted">
+                Show this QR code to the cashier at checkout to complete your
+                purchase.
+              </p>
+            </div>
+
+            <button
+              onClick={closeCheckout}
+              className="mt-6 w-full rounded-full border border-line px-6 py-3 text-sm font-semibold text-muted transition hover:border-brand hover:text-brand"
+            >
+              Close
+            </button>
+            <button
+              onClick={resetOrder}
+              className="mt-3 w-full rounded-full px-6 py-3 text-sm font-semibold text-brand transition hover:bg-brand/10"
+            >
+              Reset Order
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
