@@ -66,6 +66,11 @@ function playBeep() {
   }
 }
 
+/** Keeps long product names from blowing out fixed-width list rows. */
+function truncateName(name: string, max = 30) {
+  return name.length > max ? `${name.slice(0, max).trimEnd()}…` : name;
+}
+
 export default function BarcodeScanner() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -459,8 +464,11 @@ export default function BarcodeScanner() {
                   Item Found
                 </span>
 
-                <h3 className="mt-3 max-w-xs font-display text-base font-semibold uppercase leading-snug tracking-wide text-white">
-                  {pending.product.name}
+                <h3
+                  className="mt-3 max-w-xs font-display text-base font-semibold uppercase leading-snug tracking-wide text-white"
+                  title={pending.product.name}
+                >
+                  {truncateName(pending.product.name)}
                 </h3>
                 <p className="mt-1 max-w-xs text-xs text-muted">
                   {pending.product.description}
@@ -644,7 +652,7 @@ export default function BarcodeScanner() {
                           className="truncate text-sm font-medium text-foreground"
                           title={item.name}
                         >
-                          {item.name}
+                          {truncateName(item.name)}
                         </p>
                         <span
                           className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
@@ -721,7 +729,9 @@ export default function BarcodeScanner() {
                   className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm"
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-foreground">{item.name}</p>
+                    <p className="truncate text-foreground" title={item.name}>
+                      {truncateName(item.name)}
+                    </p>
                     <p className="text-[10px] uppercase tracking-wider text-muted">
                       {item.purchaseType === "subscription"
                         ? "Subscribe & Save"
