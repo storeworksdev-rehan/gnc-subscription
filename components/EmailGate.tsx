@@ -1,13 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { createContext, useContext, useState } from "react";
 import Image from "next/image";
-
-export const EMAIL_STORAGE_KEY = "gnc_scanner_email";
 
 // Same pattern the WHATWG HTML spec uses for <input type="email"> validation.
 // Rejects consecutive/leading/trailing dots and bare domains (no TLD) that
-// the old loose pattern let through.
+// a looser pattern would let through.
 const EMAIL_PATTERN =
   /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
@@ -15,9 +13,12 @@ export function isValidEmail(value: string) {
   return EMAIL_PATTERN.test(value.trim());
 }
 
-export function getStoredEmail(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(EMAIL_STORAGE_KEY);
+// In-memory only, on purpose: the email lives for this page session and is
+// asked for again on every refresh - nothing is written to localStorage.
+const SessionEmailContext = createContext("");
+
+export function useSessionEmail() {
+  return useContext(SessionEmailContext);
 }
 
 export default function EmailGate({
@@ -25,16 +26,9 @@ export default function EmailGate({
 }: {
   children: React.ReactNode;
 }) {
-  // null = still checking localStorage, "" = checked & none found
-  const [storedEmail, setStoredEmail] = useState<string | null | undefined>(
-    undefined,
-  );
+  const [confirmedEmail, setConfirmedEmail] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [touched, setTouched] = useState(false);
-
-  useEffect(() => {
-    setStoredEmail(getStoredEmail() ?? "");
-  }, []);
 
   const trimmed = email.trim();
   const valid = isValidEmail(trimmed);
@@ -45,14 +39,16 @@ export default function EmailGate({
     e.preventDefault();
     setTouched(true);
     if (!valid) return;
-    window.localStorage.setItem(EMAIL_STORAGE_KEY, trimmed);
-    setStoredEmail(trimmed);
+    setConfirmedEmail(trimmed);
   };
 
-  // Still reading localStorage - render nothing to avoid a gate flash.
-  if (storedEmail === undefined) return null;
-
-  if (storedEmail) return <>{children}</>;
+  if (confirmedEmail) {
+    return (
+      <SessionEmailContext.Provider value={confirmedEmail}>
+        {children}
+      </SessionEmailContext.Provider>
+    );
+  }
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4 py-10">
@@ -73,8 +69,8 @@ export default function EmailGate({
             Before You Scan
           </h1>
           <p className="mt-2 text-sm text-muted">
-            Enter your email so we can save your scan session and send order
-            updates. We&apos;ll remember it on this device.
+            Enter your email so we can attach it to this scan session and any
+            orders you place.
           </p>
 
           <form onSubmit={handleSubmit} noValidate className="mt-6 space-y-2">
@@ -119,7 +115,7 @@ export default function EmailGate({
         </div>
 
         <p className="mt-4 text-center text-[11px] text-muted/60">
-          Your email stays on this device and is never uploaded.
+          Used for this session only - you&apos;ll be asked again next time.
         </p>
       </div>
     </div>

@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { BarcodeDetector, prepareZXingModule } from "barcode-detector/ponyfill";
 import QRCode from "qrcode";
-import { getStoredEmail } from "@/components/EmailGate";
+import { useSessionEmail } from "@/components/EmailGate";
 import {
   pickRandomProduct,
   priceForPurchaseType,
@@ -33,6 +34,7 @@ type ScannedItem = {
   id: string;
   code: string;
   name: string;
+  image: string;
   price: number;
   purchaseType: PurchaseType;
   /** Re-ship interval in days - only meaningful when purchaseType is "subscription". */
@@ -73,7 +75,7 @@ function playBeep() {
 }
 
 /** Keeps long product names from blowing out fixed-width list rows. */
-function truncateName(name: string, max = 30) {
+function truncateName(name: string, max = 20) {
   return name.length > max ? `${name.slice(0, max).trimEnd()}…` : name;
 }
 
@@ -86,7 +88,7 @@ export default function BarcodeScanner() {
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<Pending | null>(null);
   const checkoutOpenRef = useRef(false);
-  const emailRef = useRef("");
+  const email = useSessionEmail();
 
   const [items, setItems] = useState<ScannedItem[]>([]);
   const [pending, setPendingState] = useState<Pending | null>(null);
@@ -101,10 +103,6 @@ export default function BarcodeScanner() {
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [orderRef, setOrderRef] = useState("");
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    emailRef.current = getStoredEmail() ?? "";
-  }, []);
 
   const setPending = useCallback((next: Pending | null) => {
     pendingRef.current = next;
@@ -179,6 +177,7 @@ export default function BarcodeScanner() {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       code: current.product.code,
       name: current.product.name,
+      image: current.product.image,
       price,
       purchaseType: current.purchaseType,
       frequencyDays: isSubscription ? current.frequencyDays : undefined,
@@ -363,7 +362,7 @@ export default function BarcodeScanner() {
     let cancelled = false;
     const payload = JSON.stringify({
       ref: orderRef,
-      email: emailRef.current,
+      email,
       subtotal,
       items: items.map((i) => ({
         code: i.code,
@@ -387,7 +386,7 @@ export default function BarcodeScanner() {
     return () => {
       cancelled = true;
     };
-  }, [checkoutOpen, orderRef, items, subtotal]);
+  }, [checkoutOpen, orderRef, items, subtotal, email]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-5">
@@ -487,6 +486,14 @@ export default function BarcodeScanner() {
                   Item Found
                 </span>
 
+                <Image
+                  src={pending.product.image}
+                  alt={pending.product.name}
+                  width={84}
+                  height={105}
+                  className="mt-3 h-24 w-auto drop-shadow-[0_8px_16px_rgba(0,0,0,0.5)]"
+                />
+
                 <h3
                   className="mt-3 max-w-xs font-display text-base font-semibold uppercase leading-snug tracking-wide text-white"
                   title={pending.product.name}
@@ -513,7 +520,10 @@ export default function BarcodeScanner() {
                     </p>
                     <p className="font-display text-lg font-bold text-brand">
                       {formatPrice(
-                        priceForPurchaseType(pending.product, pending.purchaseType),
+                        priceForPurchaseType(
+                          pending.product,
+                          pending.purchaseType,
+                        ),
                       )}
                     </p>
                   </div>
@@ -697,6 +707,15 @@ export default function BarcodeScanner() {
                     <span className="font-display text-lg font-semibold text-brand">
                       {String(items.length - idx).padStart(2, "0")}
                     </span>
+                    <div className="flex h-12 w-10 shrink-0 items-center justify-center rounded-md bg-black/40">
+                      <Image
+                        src={item.image}
+                        alt={item.name}
+                        width={40}
+                        height={50}
+                        className="h-11 w-auto"
+                      />
+                    </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p
@@ -718,7 +737,9 @@ export default function BarcodeScanner() {
                         </span>
                       </div>
                       <p className="text-[11px] uppercase tracking-wider text-muted">
-                        <span className="font-mono normal-case">{item.code}</span>
+                        <span className="font-mono normal-case">
+                          {item.code}
+                        </span>
                         {" · "}
                         {formatPrice(item.price)}
                       </p>
@@ -777,9 +798,18 @@ export default function BarcodeScanner() {
               {items.map((item) => (
                 <li
                   key={item.id}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm"
+                  className="flex items-center gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm"
                 >
-                  <div className="min-w-0">
+                  <div className="flex h-12 w-10 shrink-0 items-center justify-center rounded-md bg-black/40">
+                    <Image
+                      src={item.image}
+                      alt={item.name}
+                      width={40}
+                      height={50}
+                      className="h-11 w-auto"
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1">
                     <p className="truncate text-foreground" title={item.name}>
                       {truncateName(item.name)}
                     </p>

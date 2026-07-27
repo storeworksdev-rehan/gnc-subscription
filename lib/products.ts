@@ -9,6 +9,8 @@ export type Product = {
   code: string;
   name: string;
   description: string;
+  /** Product image shown in the popup, scan list, and checkout summary. */
+  image: string;
   /** One-time purchase price, in USD. */
   price: number;
   /**
@@ -26,19 +28,21 @@ export type Product = {
 export const DUMMY_PRODUCTS: Product[] = [
   {
     code: "619400",
-    name: "GNC Mega Men Testosterone Booster",
+    name: "GNC Prostate & Nitric Oxide Bundle",
     description:
-      "Supports healthy testosterone levels, strength, and energy for active men.",
+      "Supports prostate health alongside healthy blood flow and nitric oxide production.",
+    image: "/products/prostate-nitric-oxide-bundle.avif",
     price: 59.99,
     subscriptionAvailable: true,
     subscriptionPrice: 53.99,
   },
   {
     code: "442851",
-    name: "GNC Total Lean Whey Protein - Vanilla Bean",
+    name: "GNC Mega Men Mars Multivitamin Bundle",
     description:
-      "25g of protein per serving to fuel lean muscle and support weight management goals.",
-    price: 39.99,
+      "A complete multivitamin bundle built to support men's energy, immunity, and performance.",
+    image: "/products/mars-multi-bundle.avif",
+    price: 49.99,
     subscriptionAvailable: false,
   },
 ];
